@@ -1,27 +1,29 @@
 using System;
 using System.Buffers;
-using System.Collections.Generic;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
 
 namespace RendleLabs.Interflux
 {
-    public struct AsyncPipeReaderEnumerator
+    public class AsyncPipeReaderEnumerator
     {
         private const byte Newline = (byte) '\n';
 
+        private static readonly Line EmptyLine = new Line(Array.Empty<byte>(), 0);
         private readonly PipeReader _pipeReader;
-        private ReadOnlySequence<byte> _current;
+        private readonly ArrayPool<byte> _pool;
+        private Line _current;
         private SequencePosition? _next;
 
-        public AsyncPipeReaderEnumerator(PipeReader pipeReader)
+        public AsyncPipeReaderEnumerator(PipeReader pipeReader, ArrayPool<byte> pool)
         {
             _pipeReader = pipeReader;
+            _pool = pool;
             _current = default;
             _next = null;
         }
 
-        public ReadOnlySequence<byte> Current => !_current.IsEmpty ? _current : throw new InvalidOperationException("No data available");
+        public Line Current => !_current.IsEmpty ? _current : throw new InvalidOperationException("No data available");
 
         public ValueTask DisposeAsync()
         {
@@ -39,6 +41,7 @@ namespace RendleLabs.Interflux
                 {
                     _pipeReader.AdvanceTo(buffer.End);
                     _pipeReader.Complete();
+                    _current = EmptyLine;
                     return new ValueTask<bool>(false);
                 }
 
@@ -70,6 +73,7 @@ namespace RendleLabs.Interflux
                 {
                     return true;
                 }
+
                 _pipeReader.AdvanceTo(buffer.Start, buffer.End);
             }
         }
@@ -84,11 +88,23 @@ namespace RendleLabs.Interflux
                 buffer = buffer.Slice(skipped);
             }
 
-            int endIndex = buffer.FirstSpan.IndexOf(Newline);
+            int endIndex = span.IndexOf(Newline);
             if (endIndex > -1)
             {
-                _current = buffer.Slice(0, endIndex);
+                span = span.Slice(0, endIndex);
+                var array = _pool.Rent(endIndex + 1);
+                span.CopyTo(array);
+                _current = new Line(array, span.Length);
                 _next = buffer.GetPosition(endIndex + 1);
+                return true;
+            }
+
+            if (buffer.IsSingleSegment && buffer.Length > 0)
+            {
+                var array = _pool.Rent(span.Length);
+                span.CopyTo(array);
+                _current = new Line(array, span.Length);
+                _next = buffer.End;
                 return true;
             }
 
@@ -124,29 +140,27 @@ namespace RendleLabs.Interflux
 
         private bool TryAllSegments(ReadOnlySequence<byte> buffer)
         {
+            byte[] array;
             SkipNewLines(ref buffer);
             if (!buffer.TryPositionOf(Newline, out var position))
             {
+                if (buffer.Length > 0)
+                {
+                    array = _pool.Rent((int) buffer.Length);
+                    buffer.CopyTo(array);
+                    _current = new Line(array, (int) buffer.Length);
+                    _next = buffer.GetPosition(1, position);
+                    return true;
+                }
+
                 return false;
             }
-            _current = buffer.Slice(0, position);
+
+            var slice = buffer.Slice(0, position);
+            array = _pool.Rent((int) slice.Length);
+            slice.CopyTo(array);
+            _current = new Line(array, (int) slice.Length);
             _next = buffer.GetPosition(1, position);
-            return true;
-        }
-    }
-
-    internal static class ReadOnlySequenceExtensions
-    {
-        public static bool TryPositionOf<T>(this ReadOnlySequence<T> sequence, T value, out SequencePosition position) where T : IEquatable<T>
-        {
-            var maybePosition = sequence.PositionOf(value);
-            if (maybePosition is null)
-            {
-                position = default;
-                return false;
-            }
-
-            position = maybePosition.Value;
             return true;
         }
     }
