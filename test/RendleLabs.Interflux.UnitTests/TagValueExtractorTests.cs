@@ -29,6 +29,9 @@ namespace RendleLabs.Interflux.UnitTests
             Assert.True(TagValueExtractor.TryGetTag(bytes, key, out var actual));
             var debug = Encoding.UTF8.GetString(actual);
             Assert.True(expected.AsSpan().SequenceEqual(actual));
+
+            Span<byte> x = stackalloc byte[4];
+            x[0] = 2;
         }
 
         [Fact]
