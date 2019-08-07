@@ -19,7 +19,7 @@ namespace RendleLabs.Interflux
         public async Task RunAsync(HttpContext context)
         {
             ValueTask task = default;
-            await foreach (var line in context.Request.BodyReader.AsAsyncEnumerable(Pool))
+            await foreach (var line in context.Request.BodyReader.LinesAsAsyncEnumerable(Pool))
             {
                 task = task.Append(_forwarders.AddAsync(line));
             }
